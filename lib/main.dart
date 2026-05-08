@@ -1,7 +1,12 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+
 import './Splash.dart';
+import 'package:pdftron_flutter/pdftron_flutter.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  PdftronFlutter.initialize();
   runApp(const MyApp());
 }
 

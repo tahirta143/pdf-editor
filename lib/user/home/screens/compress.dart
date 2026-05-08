@@ -1,8 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
+import 'package:pdfeditorapp/services/pdf_service.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:open_file/open_file.dart';
 
@@ -16,24 +15,19 @@ class CompressPdfPage extends StatefulWidget {
 class _CompressPdfPageState extends State<CompressPdfPage> {
   String? inputPath;
   String? savedPath;
-
   bool isProcessing = false;
-
   int? originalSize;
   int? compressedSize;
+  String fileName = "compressed_file";
 
-  String fileName = "";
-
-  // 📂 PICK PDF
   Future<void> pickPdf() async {
-    final result = await FilePicker.pickFiles(
+    final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
     );
 
     if (result != null && result.files.single.path != null) {
       final file = File(result.files.single.path!);
-
       setState(() {
         inputPath = file.path;
         originalSize = file.lengthSync();
@@ -43,61 +37,32 @@ class _CompressPdfPageState extends State<CompressPdfPage> {
     }
   }
 
-  // 🗜️ FAKE COMPRESSION (replace with real API later)
   Future<void> compressPdf() async {
     if (inputPath == null) return;
 
     setState(() => isProcessing = true);
 
-    await Future.delayed(const Duration(seconds: 2));
-
-    final file = File(inputPath!);
-
-    setState(() {
-      compressedSize = (file.lengthSync() * 0.6).toInt();
-      isProcessing = false;
-    });
-  }
-
-  // 💾 SAVE TO DOWNLOADS (REAL FIX)
-  Future<void> saveFile() async {
-    if (inputPath == null || fileName.trim().isEmpty) return;
-
-    setState(() => isProcessing = true);
-
     try {
-      final file = File(inputPath!);
+      final path = await PdfService.compressPdf(
+        File(inputPath!),
+        fileName.trim().isEmpty ? "compressed_file" : fileName.trim(),
+      );
 
-      // 📁 Downloads folder (Android safe)
-      final dir = await getExternalStorageDirectory();
-      final downloadPath = dir!.path;
-
-      final cleanName = fileName.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '');
-
-      final newPath = p.join(downloadPath, "$cleanName.pdf");
-
-      await file.copy(newPath);
-
+      final compressedFile = File(path);
       setState(() {
-        savedPath = newPath;
+        savedPath = path;
+        compressedSize = compressedFile.lengthSync();
         isProcessing = false;
       });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("PDF Compressed Successfully!")),
+      );
     } catch (e) {
       setState(() => isProcessing = false);
-    }
-  }
-
-  // 📤 SHARE FILE
-  void shareFile() {
-    if (savedPath != null) {
-      Share.shareXFiles([XFile(savedPath!)], text: "Check my PDF file");
-    }
-  }
-
-  // 📖 OPEN FILE
-  void openFile() {
-    if (savedPath != null) {
-      OpenFile.open(savedPath!);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error: $e")),
+      );
     }
   }
 
@@ -110,102 +75,107 @@ class _CompressPdfPageState extends State<CompressPdfPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF5EDE6),
       appBar: AppBar(
-        title: const Text("PDF Tool Pro"),
+        title: const Text("Compress PDF"),
         centerTitle: true,
       ),
       body: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-
-            // 📦 FILE INFO CARD
             Card(
+              elevation: 4,
               child: Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(16.0),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-
-                    Text(inputPath ?? "No file selected"),
-
+                    const Icon(Icons.compress, size: 50, color: Colors.green),
                     const SizedBox(height: 10),
-
+                    Text(inputPath == null ? "Select a PDF to compress" : inputPath!.split(Platform.pathSeparator).last,
+                        textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 20),
                     if (originalSize != null)
-                      Text("Original: ${formatSize(originalSize!)}"),
-
-                    if (compressedSize != null)
-                      Text("Compressed: ${formatSize(compressedSize!)}"),
-
-                    const SizedBox(height: 10),
-
-                    TextField(
-                      onChanged: (v) => fileName = v,
-                      decoration: const InputDecoration(
-                        labelText: "File name",
-                        border: OutlineInputBorder(),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("Original Size:"),
+                          Text(formatSize(originalSize!), style: const TextStyle(color: Colors.red)),
+                        ],
                       ),
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    // BUTTONS
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: pickPdf,
-                            child: const Text("Pick"),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: inputPath == null ? null : compressPdf,
-                            child: const Text("Compress"),
-                          ),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: saveFile,
-                        child: const Text("Save to Downloads"),
+                    if (compressedSize != null) ...[
+                      const Divider(),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("Compressed Size:"),
+                          Text(formatSize(compressedSize!), style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                        ],
                       ),
-                    ),
-
-                    if (savedPath != null) ...[
-                      const SizedBox(height: 10),
-
-                      ElevatedButton(
-                        onPressed: openFile,
-                        child: const Text("Open PDF"),
-                      ),
-
-                      ElevatedButton(
-                        onPressed: shareFile,
-                        child: const Text("Share PDF"),
-                      ),
+                      const SizedBox(height: 5),
+                      Text("Saved ${(100 - (compressedSize! / originalSize! * 100)).toStringAsFixed(1)}%",
+                          style: const TextStyle(fontSize: 12, color: Colors.grey)),
                     ],
                   ],
                 ),
               ),
             ),
-
             const SizedBox(height: 20),
-
-            if (isProcessing)
-              const Column(
+            TextField(
+              onChanged: (v) => fileName = v,
+              decoration: const InputDecoration(
+                labelText: "Output File Name",
+                border: OutlineInputBorder(),
+                fillColor: Colors.white,
+                filled: true,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: pickPdf,
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+                    child: const Text("Pick PDF"),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: inputPath == null || isProcessing ? null : compressPdf,
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                    child: Text(isProcessing ? "Processing..." : "Compress Now"),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            if (savedPath != null) ...[
+              Row(
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 10),
-                  Text("Processing..."),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => OpenFile.open(savedPath!),
+                      icon: const Icon(Icons.remove_red_eye),
+                      label: const Text("Open"),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => Share.shareXFiles([XFile(savedPath!)]),
+                      icon: const Icon(Icons.share),
+                      label: const Text("Share"),
+                    ),
+                  ),
                 ],
               ),
+            ],
+            if (isProcessing) ...[
+              const SizedBox(height: 20),
+              const CircularProgressIndicator(),
+            ],
           ],
         ),
       ),
