@@ -2,6 +2,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:pdfeditorapp/services/pdf_service.dart';
+import 'package:pdfeditorapp/utils/responsive_helper.dart';
+import 'package:pdfeditorapp/utils/app_button.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:open_file/open_file.dart';
 
@@ -32,7 +34,7 @@ class _UnlockPdfState extends State<UnlockPdfScreen> {
     }
   }
 
-  Future<void> unlockPdf() async {
+  Future<void> unlockAndSave() async {
     if (selectedFile == null) return;
     if (passwordController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -44,16 +46,33 @@ class _UnlockPdfState extends State<UnlockPdfScreen> {
     setState(() => isProcessing = true);
 
     try {
-      final path = await PdfService.unlockPdf(
+      // Step 1: Process and get bytes
+      final bytes = await PdfService.unlockPdfBytes(
         selectedFile!,
         passwordController.text,
-        "Unlocked_${selectedFile!.path.split(Platform.pathSeparator).last}",
       );
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("PDF Unlocked and Saved: $path")),
-      );
+
+      // Step 2: Show Rename Dialog
+      final originalName = selectedFile!.path.split(Platform.pathSeparator).last.replaceAll('.pdf', '');
+      final newName = await PdfService.showSaveAsDialog(context, "unlocked_$originalName");
+
+      if (newName != null && newName.isNotEmpty) {
+        // Step 3: Save to disk
+        final path = await PdfService.savePdf(bytes, newName);
+
+        setState(() {
+          savedPath = path;
+          isProcessing = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("PDF Password Removed and Saved!")),
+        );
+      } else {
+        setState(() => isProcessing = false);
+      }
     } catch (e) {
       setState(() => isProcessing = false);
       if (!mounted) return;
@@ -65,55 +84,46 @@ class _UnlockPdfState extends State<UnlockPdfScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final r = ResponsiveHelper.of(context);
+    final vPad = r.hp(2);
+    final hPad = r.wp(r.isTablet || r.isExpanded ? 8 : 5);
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5EDE6),
-      appBar: AppBar(
-        title: const Text("Unlock PDF"),
-        centerTitle: true,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
+      backgroundColor: const Color(0xFFF7F4FB),
+      appBar: AppBar(title: const Text("Unlock PDF")),
+      body: SingleChildScrollView(
+        padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.lock_open, color: Colors.green),
-                title: Text(selectedFile == null ? "No file selected" : selectedFile!.path.split(Platform.pathSeparator).last),
-                trailing: ElevatedButton(onPressed: pickPdf, child: const Text("Pick")),
-              ),
-            ),
-            const SizedBox(height: 20),
+            AppButton(icon: Icons.attach_file, label: selectedFile == null ? "Select PDF" : selectedFile!.path.split(Platform.pathSeparator).last, onPressed: pickPdf),
+            SizedBox(height: vPad * 1.5),
             TextField(
               controller: passwordController,
-              decoration: const InputDecoration(
-                labelText: "Enter Current Password",
-                prefixIcon: Icon(Icons.key),
-                border: OutlineInputBorder(),
-                fillColor: Colors.white,
+              decoration: InputDecoration(
+                labelText: "Current Password",
+                prefixIcon: const Icon(Icons.key_outlined, color: Color(0xFF6C5C8F)),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: const BorderSide(color: Color(0xFF6C5C8F), width: 2)),
                 filled: true,
+                fillColor: const Color(0xFFEDE7F6).withOpacity(0.3),
               ),
             ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: selectedFile == null || isProcessing ? null : unlockPdf,
-                icon: const Icon(Icons.no_encryption),
-                label: Text(isProcessing ? "Processing..." : "Unlock & Remove Password"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green.shade700,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 15),
-                ),
-              ),
+            SizedBox(height: vPad * 2),
+            AppButton(
+              icon: Icons.no_encryption_gmailerrorred_outlined,
+              label: isProcessing ? "Processing..." : "Unlock & Remove Password",
+              onPressed: selectedFile == null || isProcessing ? null : unlockAndSave,
+              filled: true,
+              isLoading: isProcessing,
             ),
             if (savedPath != null) ...[
-              const SizedBox(height: 20),
+              SizedBox(height: vPad * 1.5),
               Row(
                 children: [
-                  Expanded(child: OutlinedButton.icon(onPressed: () => OpenFile.open(savedPath!), icon: const Icon(Icons.remove_red_eye), label: const Text("Open"))),
-                  const SizedBox(width: 10),
-                  Expanded(child: OutlinedButton.icon(onPressed: () => Share.shareXFiles([XFile(savedPath!)]), icon: const Icon(Icons.share), label: const Text("Share"))),
+                  Expanded(child: AppButton(icon: Icons.remove_red_eye, label: "Open", onPressed: () => OpenFile.open(savedPath!), filled: true)),
+                  SizedBox(width: r.wp(3)),
+                  Expanded(child: AppButton(icon: Icons.share, label: "Share", onPressed: () => SharePlus.instance.share(ShareParams(files: [XFile(savedPath!)])))),
                 ],
               ),
             ],

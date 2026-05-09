@@ -2,7 +2,7 @@ import 'package:curved_navigation_bar/curved_navigation_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:pdfeditorapp/user/home/home.dart';
 import 'package:pdfeditorapp/user/setting/setting.dart';
-
+import 'package:pdfeditorapp/utils/responsive_helper.dart';
 
 class Navigationbar extends StatefulWidget {
   const Navigationbar({super.key});
@@ -23,66 +23,60 @@ class _DashboardScreenState extends State<Navigationbar> {
   @override
   void initState() {
     super.initState();
-    // Initialize the PageController here to avoid the LateInitializationError
     _pageController = PageController(initialPage: _selectedIndex);
   }
 
   void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-    _pageController.jumpToPage(index); // Jump to the selected page
+    setState(() => _selectedIndex = index);
+    _pageController.jumpToPage(index);
   }
 
-  // When the user swipes between pages, update the selected index
   void _onPageChanged(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+    setState(() => _selectedIndex = index);
   }
 
   @override
   Widget build(BuildContext context) {
+    final r = ResponsiveHelper.of(context);
+    final navHeight = r.hp(8).clamp(56.0, 80.0);
+    final iconSize = r.scale(28);
+    final labelFontSize = r.sp(11);
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: PageView(
         controller: _pageController,
-        onPageChanged: _onPageChanged, // Listen to page changes
+        onPageChanged: _onPageChanged,
         children: _widgetOptions,
       ),
       bottomNavigationBar: CurvedNavigationBar(
-        backgroundColor: Colors.white,  // Background of the body
-        color: Colors.white,  // Navigation bar color
-        buttonBackgroundColor: Color(0xFFF50F10),
-        height: 65,
+        backgroundColor: Colors.white,
+        color: Colors.white,
+        buttonBackgroundColor: const Color(0xFFF50F10),
+        height: navHeight,
         animationDuration: const Duration(milliseconds: 300),
         animationCurve: Curves.easeInOut,
         index: _selectedIndex,
-
         items: <Widget>[
-          _buildNavItem(Icons.home, 'Home', 0),
-          _buildNavItem(Icons.person, 'Setting', 1),
+          _buildNavItem(Icons.home, 'Home', 0, iconSize, labelFontSize),
+          _buildNavItem(Icons.person, 'Setting', 1, iconSize, labelFontSize),
         ],
-
-        onTap: _onItemTapped, // Handle item tap from bottom navigation
+        onTap: _onItemTapped,
       ),
     );
   }
 
-
-  Widget _buildNavItem(IconData icon, String label, int index) {
-
+  Widget _buildNavItem(IconData icon, String label, int index, double iconSize, double labelFontSize) {
     final isSelected = _selectedIndex == index;
-
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(icon, size: 30, color: isSelected ? Colors.white : Colors.black,),
-        if (_selectedIndex != index)
+        Icon(icon, size: iconSize, color: isSelected ? Colors.white : Colors.black),
+        if (!isSelected)
           Text(
             label,
-            style: const TextStyle(
-              fontSize: 12,
+            style: TextStyle(
+              fontSize: labelFontSize,
               fontWeight: FontWeight.bold,
               color: Colors.black,
             ),
@@ -90,7 +84,4 @@ class _DashboardScreenState extends State<Navigationbar> {
       ],
     );
   }
-
 }
-
-

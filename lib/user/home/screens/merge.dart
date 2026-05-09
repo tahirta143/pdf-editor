@@ -2,8 +2,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:pdfeditorapp/services/pdf_service.dart';
+import 'package:pdfeditorapp/utils/responsive_helper.dart';
+import 'package:pdfeditorapp/utils/app_button.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:open_file/open_file.dart';
+import 'dart:typed_data';
 
 class MergePdfScreen extends StatefulWidget {
   const MergePdfScreen({super.key});
@@ -14,9 +17,9 @@ class MergePdfScreen extends StatefulWidget {
 
 class _MergePdfState extends State<MergePdfScreen> {
   List<File> selectedFiles = [];
+  Map<String, Uint8List?> thumbnails = {};
   bool isProcessing = false;
   String? savedPath;
-  final TextEditingController fileNameController = TextEditingController(text: "Merged_Document");
 
   Future<void> pickPdfs() async {
     final result = await FilePicker.platform.pickFiles(
@@ -26,177 +29,183 @@ class _MergePdfState extends State<MergePdfScreen> {
     );
 
     if (result != null) {
+      final newFiles = result.paths.where((path) => path != null).map((path) => File(path!)).toList();
       setState(() {
-        selectedFiles.addAll(result.paths.map((path) => File(path!)).toList());
+        selectedFiles.addAll(newFiles);
         savedPath = null;
       });
+      _loadThumbnails(newFiles);
     }
   }
 
-  Future<void> mergePdfs() async {
+  Future<void> _loadThumbnails(List<File> files) async {
+    for (var file in files) {
+      if (!thumbnails.containsKey(file.path)) {
+        final bytes = await file.readAsBytes();
+        final thumb = await PdfService.rasterizePage(bytes, 0);
+        if (!mounted) return;
+        setState(() {
+          thumbnails[file.path] = thumb;
+        });
+      }
+    }
+  }
+
+  Future<void> processMergeAndSave() async {
     if (selectedFiles.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Select at least 2 PDF files to merge")),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Select at least 2 PDFs to merge")));
       return;
     }
-
     setState(() => isProcessing = true);
 
     try {
-      final path = await PdfService.mergePdfs(
-        selectedFiles,
-        fileNameController.text.trim().isEmpty ? "Merged_Document" : fileNameController.text.trim(),
-      );
+      // Step 1: Process and get bytes
+      final bytes = await PdfService.mergePdfsBytes(selectedFiles);
 
-      setState(() {
-        savedPath = path;
-        isProcessing = false;
-      });
+      if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("PDF Merged and Saved: $path")),
-      );
+      // Step 2: Show Rename Dialog
+      final newName = await PdfService.showSaveAsDialog(context, "Merged_Document");
+
+      if (newName != null && newName.isNotEmpty) {
+        // Step 3: Save to disk
+        final path = await PdfService.savePdf(bytes, newName);
+        
+        setState(() {
+          savedPath = path;
+          isProcessing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("PDFs Merged Successfully!")));
+      } else {
+        setState(() => isProcessing = false);
+      }
     } catch (e) {
       setState(() => isProcessing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
-  }
-
-  void removeFile(int index) {
-    setState(() {
-      selectedFiles.removeAt(index);
-    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final r = ResponsiveHelper.of(context);
+    final vPad = r.hp(2);
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5EDE6),
+      backgroundColor: const Color(0xFFF7F4FB),
       appBar: AppBar(
         title: const Text("Merge PDFs"),
-        centerTitle: true,
+        actions: [IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context))],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            // FILE NAME INPUT
-            TextField(
-              controller: fileNameController,
-              decoration: const InputDecoration(
-                labelText: "Output File Name",
-                border: OutlineInputBorder(),
-                fillColor: Colors.white,
-                filled: true,
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // FILE LIST
-            Expanded(
-              child: selectedFiles.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.picture_as_pdf, size: 80, color: Colors.grey.shade400),
-                          const SizedBox(height: 10),
-                          const Text("No PDF files selected"),
-                        ],
-                      ),
-                    )
-                  : ReorderableListView.builder(
-                      itemCount: selectedFiles.length,
-                      onReorder: (oldIndex, newIndex) {
-                        setState(() {
-                          if (newIndex > oldIndex) newIndex -= 1;
-                          final item = selectedFiles.removeAt(oldIndex);
-                          selectedFiles.insert(newIndex, item);
-                        });
-                      },
-                      itemBuilder: (context, index) {
-                        final file = selectedFiles[index];
-                        return ListTile(
-                          key: ValueKey(file.path),
-                          leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
-                          title: Text(file.path.split(Platform.pathSeparator).last),
-                          subtitle: Text("${(file.lengthSync() / 1024).toStringAsFixed(2)} KB"),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.drag_handle),
-                              const SizedBox(width: 10),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.grey),
-                                onPressed: () => removeFile(index),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // ACTION BUTTONS
-            Row(
+      body: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.all(r.wp(4)),
+            child: Row(
               children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: pickPdfs,
-                    icon: const Icon(Icons.add),
-                    label: const Text("Add PDFs"),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
+                Expanded(child: AppButton(icon: Icons.attach_file, label: "Pick PDFs", onPressed: pickPdfs)),
+                SizedBox(width: r.wp(3)),
+                Expanded(child: AppButton(icon: Icons.unfold_more, label: "Merge", onPressed: selectedFiles.length < 2 || isProcessing ? null : processMergeAndSave, filled: true, isLoading: isProcessing)),
+              ],
+            ),
+          ),
+          const Text("Tap to remove · drag to reorder", style: TextStyle(color: Colors.grey, fontSize: 13)),
+          const SizedBox(height: 10),
+          Expanded(
+            child: Stack(
+              children: [
+                _buildFileGrid(),
+                if (isProcessing) const Center(child: CircularProgressIndicator()),
+                if (savedPath != null) _buildSaveSuccessOverlay(r),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFileGrid() {
+    return ReorderableListView.builder(
+      padding: const EdgeInsets.all(12),
+      scrollDirection: Axis.vertical,
+      itemCount: selectedFiles.length,
+      onReorder: (oldIndex, newIndex) {
+        setState(() {
+          if (newIndex > oldIndex) newIndex -= 1;
+          final item = selectedFiles.removeAt(oldIndex);
+          selectedFiles.insert(newIndex, item);
+        });
+      },
+      itemBuilder: (context, index) {
+        final file = selectedFiles[index];
+        final fileName = file.path.split(Platform.pathSeparator).last;
+        return Padding(
+          key: ValueKey(file.path),
+          padding: const EdgeInsets.only(bottom: 10),
+          child: ListTile(
+            leading: Stack(
+              children: [
+                Container(
+                  width: 50,
+                  height: 70,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.grey.shade300),
                   ),
+                  child: thumbnails[file.path] == null
+                      ? const Icon(Icons.picture_as_pdf, color: Colors.grey)
+                      : Image.memory(thumbnails[file.path]!, fit: BoxFit.cover),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: selectedFiles.length < 2 || isProcessing ? null : mergePdfs,
-                    icon: isProcessing 
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.merge_type),
-                    label: Text(isProcessing ? "Merging..." : "Merge PDFs"),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
+                Positioned(
+                  top: 2,
+                  left: 2,
+                  child: CircleAvatar(
+                    radius: 8,
+                    backgroundColor: Colors.black54,
+                    child: Text("${index + 1}", style: const TextStyle(fontSize: 8, color: Colors.white)),
                   ),
                 ),
               ],
             ),
+            title: Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.grey),
+                  onPressed: () => setState(() => selectedFiles.removeAt(index)),
+                ),
+                const Icon(Icons.drag_handle, color: Colors.grey),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 
-            if (savedPath != null) ...[
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () => OpenFile.open(savedPath!),
-                      icon: const Icon(Icons.remove_red_eye),
-                      label: const Text("Open PDF"),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () => Share.shareXFiles([XFile(savedPath!)], text: "My Merged PDF"),
-                      icon: const Icon(Icons.share),
-                      label: const Text("Share PDF"),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+  Widget _buildSaveSuccessOverlay(ResponsiveHelper r) {
+    return Container(
+      color: Colors.white.withOpacity(0.95),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.check_circle, color: Colors.green, size: r.scale(80)),
+            const SizedBox(height: 20),
+            Text("PDFs Merged Successfully!", style: TextStyle(fontSize: r.sp(17), fontWeight: FontWeight.bold)),
+            const SizedBox(height: 30),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                AppButton(icon: Icons.remove_red_eye, label: "Open", onPressed: () => OpenFile.open(savedPath!), filled: true, fullWidth: false),
+                SizedBox(width: r.wp(3)),
+                AppButton(icon: Icons.share, label: "Share", onPressed: () => SharePlus.instance.share(ShareParams(files: [XFile(savedPath!)])), fullWidth: false),
+              ],
+            ),
+            const SizedBox(height: 20),
+            TextButton(onPressed: () => setState(() => savedPath = null), child: const Text("Dismiss")),
           ],
         ),
       ),

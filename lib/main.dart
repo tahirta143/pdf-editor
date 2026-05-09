@@ -2,11 +2,9 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import './Splash.dart';
-import 'package:pdftron_flutter/pdftron_flutter.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  PdftronFlutter.initialize();
   runApp(const MyApp());
 }
 
@@ -16,6 +14,9 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const primaryColor = Color(0xFFF50F10);
+    const softPurple = Color(0xFF6C5C8F);
+    const softBg = Color(0xFFF7F2FC);
+    const borderColor = Color(0xFFE2D9F0);
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -23,7 +24,7 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         fontFamily: 'Roboto',
-        scaffoldBackgroundColor: Colors.white,
+        scaffoldBackgroundColor: const Color(0xFFF5F2F8),
 
         colorScheme: ColorScheme.fromSeed(
           seedColor: primaryColor,
@@ -33,7 +34,7 @@ class MyApp extends StatelessWidget {
         ),
 
         appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.white,
+          backgroundColor: Color(0xFFF5F2F8),
           elevation: 0,
           centerTitle: true,
           iconTheme: IconThemeData(color: Colors.black),
@@ -67,11 +68,25 @@ class MyApp extends StatelessWidget {
 
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
-            backgroundColor: primaryColor,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
+            backgroundColor: const Color(0xFFEDE7F6),
+            foregroundColor: const Color(0xFF6C5C8F),
+            elevation: 2,
+            shadowColor: const Color(0xFF6C5C8F).withOpacity(0.18),
+            side: BorderSide.none,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+          ),
+        ),
+
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            backgroundColor: const Color(0xFFEDE7F6),
+            foregroundColor: const Color(0xFF6C5C8F),
+            side: BorderSide.none,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+            elevation: 0,
+            shadowColor: Colors.transparent,
           ),
         ),
 

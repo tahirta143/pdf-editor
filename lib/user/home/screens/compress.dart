@@ -2,23 +2,25 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:pdfeditorapp/services/pdf_service.dart';
+import 'package:pdfeditorapp/utils/responsive_helper.dart';
+import 'package:pdfeditorapp/utils/app_button.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:open_file/open_file.dart';
 
-class CompressPdfPage extends StatefulWidget {
-  const CompressPdfPage({super.key});
+class CompressPdfScreen extends StatefulWidget {
+  const CompressPdfScreen({super.key});
 
   @override
-  State<CompressPdfPage> createState() => _CompressPdfPageState();
+  State<CompressPdfScreen> createState() => _CompressPdfState();
 }
 
-class _CompressPdfPageState extends State<CompressPdfPage> {
-  String? inputPath;
-  String? savedPath;
+class _CompressPdfState extends State<CompressPdfScreen> {
+  File? selectedFile;
   bool isProcessing = false;
-  int? originalSize;
-  int? compressedSize;
-  String fileName = "compressed_file";
+  double quality = 30;
+  String? savedPath;
+  String? resultInfo;
+  String? _pdfPassword;
 
   Future<void> pickPdf() async {
     final result = await FilePicker.platform.pickFiles(
@@ -27,154 +29,163 @@ class _CompressPdfPageState extends State<CompressPdfPage> {
     );
 
     if (result != null && result.files.single.path != null) {
-      final file = File(result.files.single.path!);
       setState(() {
-        inputPath = file.path;
-        originalSize = file.lengthSync();
-        compressedSize = null;
+        selectedFile = File(result.files.single.path!);
         savedPath = null;
+        resultInfo = null;
+        _pdfPassword = null;
       });
     }
   }
 
-  Future<void> compressPdf() async {
-    if (inputPath == null) return;
-
-    setState(() => isProcessing = true);
+  Future<void> compressAndSave() async {
+    if (selectedFile == null) return;
+    setState(() {
+      isProcessing = true;
+      resultInfo = "Compressing PDF for minimum size...";
+    });
 
     try {
-      final path = await PdfService.compressPdf(
-        File(inputPath!),
-        fileName.trim().isEmpty ? "compressed_file" : fileName.trim(),
-      );
+      final originalSize = await selectedFile!.length();
+      final originalName = selectedFile!.path.split(Platform.pathSeparator).last.replaceAll('.pdf', '');
+      
+      // Step 1: Process and get bytes
+      late final List<int> bytes;
+      try {
+        bytes = await PdfService.compressPdfBytes(
+          selectedFile!,
+          quality: quality,
+          password: _pdfPassword,
+        );
+      } catch (e) {
+        if (!mounted) return;
+        if (PdfService.isEncryptedPdfError(e)) {
+          final pass = await PdfService.showPasswordDialog(context, "Encrypted PDF");
+          if (pass == null || pass.isEmpty) {
+            setState(() {
+              isProcessing = false;
+              resultInfo = "Password required for encrypted PDF.";
+            });
+            return;
+          }
+          _pdfPassword = pass;
+          bytes = await PdfService.compressPdfBytes(
+            selectedFile!,
+            quality: quality,
+            password: _pdfPassword,
+          );
+        } else {
+          rethrow;
+        }
+      }
 
-      final compressedFile = File(path);
-      setState(() {
-        savedPath = path;
-        compressedSize = compressedFile.lengthSync();
-        isProcessing = false;
-      });
+      if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("PDF Compressed Successfully!")),
-      );
+      // Step 2: Show Rename Dialog
+      final newName = await PdfService.showSaveAsDialog(context, "compressed_$originalName");
+      
+      if (newName != null && newName.isNotEmpty) {
+        // Step 3: Save to disk
+        final path = await PdfService.savePdf(bytes, newName);
+        final newSize = await File(path).length();
+        final bool reduced = newSize < originalSize;
+
+        setState(() {
+          savedPath = path;
+          isProcessing = false;
+          resultInfo = reduced
+              ? "Saved: ${_formatSize(originalSize)} -> ${_formatSize(newSize)}"
+              : "Saved, but file is already optimized: ${_formatSize(newSize)}";
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reduced ? "PDF compressed and saved!" : "PDF saved (already optimized).")),
+        );
+      } else {
+        setState(() {
+          isProcessing = false;
+          resultInfo = "Save cancelled.";
+        });
+      }
     } catch (e) {
-      setState(() => isProcessing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
-      );
+      setState(() {
+        isProcessing = false;
+        resultInfo = "Error occurred.";
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
   }
 
-  String formatSize(int bytes) {
-    if (bytes < 1024) return "$bytes B";
-    if (bytes < 1024 * 1024) return "${(bytes / 1024).toStringAsFixed(2)} KB";
-    return "${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB";
+  String _formatSize(int bytes) {
+    return (bytes / (1024 * 1024)).toStringAsFixed(2) + " MB";
   }
 
   @override
   Widget build(BuildContext context) {
+    final r = ResponsiveHelper.of(context);
+    final vPad = r.hp(2);
+    final hPad = r.wp(r.isTablet || r.isExpanded ? 8 : 5);
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5EDE6),
-      appBar: AppBar(
-        title: const Text("Compress PDF"),
-        centerTitle: true,
-      ),
+      backgroundColor: const Color(0xFFF7F4FB),
+      appBar: AppBar(title: const Text("PDF Compress")),
       body: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: EdgeInsets.symmetric(horizontal: hPad),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Card(
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
+            SizedBox(height: vPad),
+            AppButton(
+              icon: Icons.attach_file,
+              label: selectedFile == null ? "Select PDF" : selectedFile!.path.split(Platform.pathSeparator).last,
+              onPressed: pickPdf,
+            ),
+            SizedBox(height: vPad * 1.5),
+            if (selectedFile != null) ...[
+              Text("Compression quality: ${quality.toInt()}%", style: TextStyle(fontSize: r.sp(15), fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              SliderTheme(
+                data: SliderThemeData(
+                  activeTrackColor: const Color(0xFF6C5C8F),
+                  inactiveTrackColor: Colors.grey.shade200,
+                  thumbColor: const Color(0xFF6C5C8F),
+                  overlayColor: const Color(0xFF6C5C8F).withOpacity(0.15),
+                  trackHeight: 4,
+                ),
+                child: Slider(value: quality, min: 1, max: 100, onChanged: (val) => setState(() => quality = val)),
+              ),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: r.wp(2)),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.compress, size: 50, color: Colors.green),
-                    const SizedBox(height: 10),
-                    Text(inputPath == null ? "Select a PDF to compress" : inputPath!.split(Platform.pathSeparator).last,
-                        textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 20),
-                    if (originalSize != null)
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text("Original Size:"),
-                          Text(formatSize(originalSize!), style: const TextStyle(color: Colors.red)),
-                        ],
-                      ),
-                    if (compressedSize != null) ...[
-                      const Divider(),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text("Compressed Size:"),
-                          Text(formatSize(compressedSize!), style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                      const SizedBox(height: 5),
-                      Text("Saved ${(100 - (compressedSize! / originalSize! * 100)).toStringAsFixed(1)}%",
-                          style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                    ],
+                    Text("Lower = smaller file", style: TextStyle(color: Colors.grey, fontSize: r.sp(12))),
+                    Text("Higher = better quality", style: TextStyle(color: Colors.grey, fontSize: r.sp(12))),
                   ],
                 ),
               ),
-            ),
-            const SizedBox(height: 20),
-            TextField(
-              onChanged: (v) => fileName = v,
-              decoration: const InputDecoration(
-                labelText: "Output File Name",
-                border: OutlineInputBorder(),
-                fillColor: Colors.white,
+              SizedBox(height: vPad * 2),
+              AppButton(
+                icon: Icons.unfold_less,
+                label: isProcessing ? "Processing..." : "Compress & Save PDF",
+                onPressed: isProcessing ? null : compressAndSave,
                 filled: true,
+                isLoading: isProcessing,
               ),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: pickPdf,
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
-                    child: const Text("Pick PDF"),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: inputPath == null || isProcessing ? null : compressPdf,
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                    child: Text(isProcessing ? "Processing..." : "Compress Now"),
-                  ),
+              if (resultInfo != null) ...[
+                SizedBox(height: vPad),
+                Center(child: Text(resultInfo!, style: TextStyle(fontSize: r.sp(13), color: Colors.black87, fontWeight: FontWeight.w500))),
+              ],
+              if (savedPath != null) ...[
+                SizedBox(height: vPad * 1.5),
+                Row(
+                  children: [
+                    Expanded(child: AppButton(icon: Icons.remove_red_eye, label: "Open", onPressed: () => OpenFile.open(savedPath!))),
+                    SizedBox(width: r.wp(3)),
+                    Expanded(child: AppButton(icon: Icons.share, label: "Share", onPressed: () => SharePlus.instance.share(ShareParams(files: [XFile(savedPath!)])))),
+                  ],
                 ),
               ],
-            ),
-            const SizedBox(height: 20),
-            if (savedPath != null) ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () => OpenFile.open(savedPath!),
-                      icon: const Icon(Icons.remove_red_eye),
-                      label: const Text("Open"),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () => Share.shareXFiles([XFile(savedPath!)]),
-                      icon: const Icon(Icons.share),
-                      label: const Text("Share"),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            if (isProcessing) ...[
-              const SizedBox(height: 20),
-              const CircularProgressIndicator(),
             ],
           ],
         ),

@@ -2,8 +2,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:pdfeditorapp/services/pdf_service.dart';
+import 'package:pdfeditorapp/utils/responsive_helper.dart';
+import 'package:pdfeditorapp/utils/app_button.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:open_file/open_file.dart';
+import 'dart:typed_data';
+import 'package:syncfusion_flutter_pdf/pdf.dart';
 
 class SplitPdfScreen extends StatefulWidget {
   const SplitPdfScreen({super.key});
@@ -14,9 +18,13 @@ class SplitPdfScreen extends StatefulWidget {
 
 class _SplitPdfState extends State<SplitPdfScreen> {
   File? selectedFile;
+  Uint8List? fileBytes;
+  List<Uint8List?> thumbnails = [];
+  RangeValues _currentRange = const RangeValues(1, 1);
+  int totalPages = 0;
+  bool isLoading = false;
   bool isProcessing = false;
-  List<String> savedPaths = [];
-  final TextEditingController rangeController = TextEditingController(text: "1-2, 3-4");
+  String? savedPath;
 
   Future<void> pickPdf() async {
     final result = await FilePicker.platform.pickFiles(
@@ -27,128 +35,218 @@ class _SplitPdfState extends State<SplitPdfScreen> {
     if (result != null && result.files.single.path != null) {
       setState(() {
         selectedFile = File(result.files.single.path!);
-        savedPaths = [];
+        thumbnails = [];
+        savedPath = null;
+        isLoading = true;
+      });
+      _loadThumbnails();
+    }
+  }
+
+  Future<void> _loadThumbnails() async {
+    if (selectedFile == null) return;
+    fileBytes = await selectedFile!.readAsBytes();
+    final document = PdfDocument(inputBytes: fileBytes);
+    totalPages = document.pages.count;
+    document.dispose();
+
+    setState(() {
+      thumbnails = List.filled(totalPages, null);
+      _currentRange = RangeValues(1, totalPages.toDouble());
+    });
+
+    for (int i = 0; i < totalPages; i++) {
+      final thumb = await PdfService.rasterizePage(fileBytes!, i);
+      if (!mounted) return;
+      setState(() {
+        thumbnails[i] = thumb;
+        if (i == totalPages - 1) isLoading = false;
       });
     }
   }
 
-  Future<void> splitPdf() async {
+  Future<void> processSplitAndSave() async {
     if (selectedFile == null) return;
-    if (rangeController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please enter page ranges (e.g., 1-2, 3-5)")),
-      );
-      return;
-    }
-
     setState(() => isProcessing = true);
 
     try {
-      final paths = await PdfService.splitPdf(
-        selectedFile!,
-        rangeController.text.trim(),
-      );
+      final start = _currentRange.start.toInt();
+      final end = _currentRange.end.toInt();
+      
+      // Step 1: Process and get bytes
+      // Generate a list of indices for the range
+      final List<int> pageIndices = [];
+      for (int i = start - 1; i < end; i++) {
+        pageIndices.add(i);
+      }
+      
+      final bytes = await PdfService.extractPagesBytes(selectedFile!, pageIndices);
 
-      setState(() {
-        savedPaths = paths;
-        isProcessing = false;
-      });
+      if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("PDF Split into ${paths.length} files")),
-      );
+      // Step 2: Show Rename Dialog
+      final originalName = selectedFile!.path.split(Platform.pathSeparator).last.replaceAll('.pdf', '');
+      final newName = await PdfService.showSaveAsDialog(context, "split_${start}_to_${end}_$originalName");
+
+      if (newName != null && newName.isNotEmpty) {
+        // Step 3: Save to disk
+        final path = await PdfService.savePdf(bytes, newName);
+        
+        setState(() {
+          savedPath = path;
+          isProcessing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("PDF Split Successful!")));
+      } else {
+        setState(() => isProcessing = false);
+      }
     } catch (e) {
       setState(() => isProcessing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final r = ResponsiveHelper.of(context);
+    final vPad = r.hp(2);
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5EDE6),
-      appBar: AppBar(
-        title: const Text("Split PDF"),
-        centerTitle: true,
+      backgroundColor: const Color(0xFFF7F4FB),
+      appBar: AppBar(title: const Text("Split PDF")),
+      body: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.all(r.wp(4)),
+            child: Row(
+              children: [
+                Expanded(child: AppButton(icon: Icons.attach_file, label: "Pick PDF", onPressed: pickPdf)),
+                SizedBox(width: r.wp(3)),
+                Expanded(child: AppButton(icon: Icons.call_split, label: "Split", onPressed: selectedFile == null || isProcessing ? null : processSplitAndSave, filled: true, isLoading: isProcessing)),
+              ],
+            ),
+          ),
+          if (selectedFile != null && totalPages > 1) ...[
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: r.wp(5)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Range: ${_currentRange.start.toInt()} - ${_currentRange.end.toInt()} / $totalPages",
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: r.sp(15))),
+                  const SizedBox(height: 10),
+                  SliderTheme(
+                    data: SliderThemeData(
+                      activeTrackColor: const Color(0xFF6C5C8F),
+                      inactiveTrackColor: Colors.grey.shade200,
+                      thumbColor: const Color(0xFF6C5C8F),
+                      overlayColor: const Color(0xFF6C5C8F).withOpacity(0.15),
+                    ),
+                    child: RangeSlider(
+                      values: _currentRange,
+                      min: 1,
+                      max: totalPages.toDouble(),
+                      divisions: totalPages > 1 ? totalPages - 1 : 1,
+                      onChanged: (values) => setState(() => _currentRange = values),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Expanded(
+            child: Stack(
+              children: [
+                if (selectedFile == null) _buildEmptyState(r) else _buildGrid(),
+                if (isProcessing) const Center(child: CircularProgressIndicator()),
+                if (savedPath != null) _buildSaveSuccessOverlay(r),
+              ],
+            ),
+          ),
+        ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // FILE SELECTION
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
-                title: Text(selectedFile == null ? "No file selected" : selectedFile!.path.split(Platform.pathSeparator).last),
-                trailing: ElevatedButton(
-                  onPressed: pickPdf,
-                  child: const Text("Pick"),
+    );
+  }
+
+  Widget _buildEmptyState(ResponsiveHelper r) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.call_split, size: r.scale(80), color: Colors.grey.shade300),
+          const SizedBox(height: 20),
+          const Text("Pick a PDF to select split range", style: TextStyle(color: Colors.grey)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGrid() {
+    return GridView.builder(
+      padding: const EdgeInsets.all(12),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+        childAspectRatio: 0.75,
+      ),
+      itemCount: thumbnails.length,
+      itemBuilder: (context, index) {
+        final pageNum = index + 1;
+        final isInRange = pageNum >= _currentRange.start && pageNum <= _currentRange.end;
+        
+        return Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: isInRange ? Colors.purple : Colors.grey.shade300, width: isInRange ? 2 : 1),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Stack(
+            children: [
+              thumbnails[index] == null
+                  ? const Center(child: CircularProgressIndicator())
+                  : Image.memory(thumbnails[index]!, fit: BoxFit.cover),
+              if (isInRange)
+                Container(
+                  color: Colors.purple.withOpacity(0.1),
                 ),
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // RANGE INPUT
-            const Text("Enter Page Ranges (e.g. 1-2, 3-5):", style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: rangeController,
-              decoration: const InputDecoration(
-                hintText: "1-2, 3-4",
-                border: OutlineInputBorder(),
-                fillColor: Colors.white,
-                filled: true,
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // ACTION BUTTON
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: selectedFile == null || isProcessing ? null : splitPdf,
-                icon: isProcessing 
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.call_split),
-                label: Text(isProcessing ? "Processing..." : "Split PDF"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.orange,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 15),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // RESULTS
-            if (savedPaths.isNotEmpty) ...[
-              const Text("Generated Files:", style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 10),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: savedPaths.length,
-                  itemBuilder: (context, index) {
-                    final path = savedPaths[index];
-                    return ListTile(
-                      dense: true,
-                      leading: const Icon(Icons.file_copy, size: 20),
-                      title: Text(path.split(Platform.pathSeparator).last, style: const TextStyle(fontSize: 12)),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(icon: const Icon(Icons.remove_red_eye, size: 18), onPressed: () => OpenFile.open(path)),
-                          IconButton(icon: const Icon(Icons.share, size: 18), onPressed: () => Share.shareXFiles([XFile(path)])),
-                        ],
-                      ),
-                    );
-                  },
+              Positioned(
+                top: 5,
+                left: 5,
+                child: CircleAvatar(
+                  radius: 10,
+                  backgroundColor: isInRange ? Colors.purple : Colors.black54,
+                  child: Text("$pageNum", style: const TextStyle(fontSize: 10, color: Colors.white)),
                 ),
               ),
             ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSaveSuccessOverlay(ResponsiveHelper r) {
+    return Container(
+      color: Colors.white.withOpacity(0.95),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.check_circle, color: Colors.green, size: r.scale(80)),
+            const SizedBox(height: 20),
+            Text("PDF Split Successfully!", style: TextStyle(fontSize: r.sp(17), fontWeight: FontWeight.bold)),
+            const SizedBox(height: 30),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                AppButton(icon: Icons.remove_red_eye, label: "Open", onPressed: () => OpenFile.open(savedPath!), filled: true, fullWidth: false),
+                SizedBox(width: r.wp(3)),
+                AppButton(icon: Icons.share, label: "Share", onPressed: () => SharePlus.instance.share(ShareParams(files: [XFile(savedPath!)])), fullWidth: false),
+              ],
+            ),
+            const SizedBox(height: 20),
+            TextButton(onPressed: () => setState(() => savedPath = null), child: const Text("Dismiss")),
           ],
         ),
       ),

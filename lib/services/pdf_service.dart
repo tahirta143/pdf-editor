@@ -1,244 +1,556 @@
 import 'dart:io';
-import 'dart:ui';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show Colors, Color, Offset, BuildContext, showDialog, AlertDialog, TextField, TextEditingController, TextButton, ElevatedButton, InputDecoration, Rect, Size, Navigator, Text;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import 'package:pdfx/pdfx.dart' as pdfx;
+import 'package:pdf/pdf.dart' as pw;
+import 'package:printing/printing.dart';
 
 class PdfService {
-  /// Save PDF bytes to a file in the app's documents directory or downloads
-  static Future<String> savePdf(List<int> bytes, String fileName) async {
-    Directory? directory;
-    if (Platform.isAndroid) {
-      directory = Directory('/storage/emulated/0/Download');
-      if (!await directory.exists()) {
-        directory = await getExternalStorageDirectory();
-      }
-    } else {
-      directory = await getApplicationDocumentsDirectory();
-    }
+  static bool isEncryptedPdfError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('encrypted document') ||
+        message.contains('password is invalid');
+  }
 
-    final path = p.join(directory!.path, fileName);
+  static Future<String?> showPasswordDialog(BuildContext context, String title) async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: "PDF Password",
+            hintText: "Enter password",
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFF3E5F5),
+              foregroundColor: const Color(0xFF7E57C2),
+            ),
+            child: const Text("Unlock"),
+          ),
+        ],
+      ),
+    );
+  }
+  /// Request storage permission (Android) and return the Downloads directory
+  static Future<Directory> _getDownloadsDirectory() async {
+    if (Platform.isAndroid) {
+      var status = await Permission.storage.status;
+      if (!status.isGranted) {
+        status = await Permission.storage.request();
+      }
+
+      var manageStatus = await Permission.manageExternalStorage.status;
+      if (!manageStatus.isGranted) {
+        await Permission.manageExternalStorage.request();
+      }
+
+      final downloadsDir = Directory('/storage/emulated/0/Download');
+      if (await downloadsDir.exists()) {
+        return downloadsDir;
+      }
+      final extDir = await getExternalStorageDirectory();
+      if (extDir != null) return extDir;
+    }
+    return await getApplicationDocumentsDirectory();
+  }
+
+  static Future<String> savePdf(List<int> bytes, String fileName) async {
+    final directory = await _getDownloadsDirectory();
+    // Ensure .pdf extension
+    if (!fileName.toLowerCase().endsWith('.pdf')) {
+      fileName = "$fileName.pdf";
+    }
+    final path = p.join(directory.path, fileName);
     final file = File(path);
     await file.writeAsBytes(bytes);
     return path;
   }
 
-  /// Convert Images to PDF
-  static Future<String> imagesToPdf(List<File> images, String outputName) async {
-    // Create a new PDF document
-    final PdfDocument document = PdfDocument();
+  static Future<String> saveFile(List<int> bytes, String fileName) async {
+    final directory = await _getDownloadsDirectory();
+    final path = p.join(directory.path, fileName);
+    final file = File(path);
+    await file.writeAsBytes(bytes);
+    return path;
+  }
 
+  /// Show a dialog to let the user edit the filename before saving
+  static Future<String?> showSaveAsDialog(BuildContext context, String initialName) async {
+    final controller = TextEditingController(text: initialName);
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Save PDF"),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: "File Name",
+            hintText: "Enter file name",
+            suffixText: ".pdf",
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF3E5F5), foregroundColor: const Color(0xFF7E57C2)),
+            child: const Text("Save"),
+          ),
+        ],
+      ),
+    );
+  }
+  /// Rasterize a specific page to an image (for thumbnails)
+  static Future<Uint8List?> rasterizePage(Uint8List pdfBytes, int pageIndex) async {
+    try {
+      await for (final page in Printing.raster(pdfBytes, pages: [pageIndex], dpi: 100)) {
+        return await page.toPng();
+      }
+    } catch (e) {
+      debugPrint("Rasterize error: $e");
+    }
+    return null;
+  }
+
+  /// Convert Images to PDF
+  static Future<List<int>> imagesToPdfBytes(List<File> images) async {
+    final PdfDocument document = PdfDocument();
     for (var imageFile in images) {
-      // Add a page to the document
       final PdfPage page = document.pages.add();
-      
-      // Load the image
       final PdfBitmap image = PdfBitmap(await imageFile.readAsBytes());
-      
-      // Draw the image to the page
       page.graphics.drawImage(
         image,
         Rect.fromLTWH(0, 0, page.getClientSize().width, page.getClientSize().height),
       );
     }
-
-    // Save the document
     final List<int> bytes = await document.save();
-    
-    // Dispose the document
     document.dispose();
-
-    // Save to file
-    return await savePdf(bytes, "$outputName.pdf");
+    return bytes;
   }
 
   /// Merge multiple PDFs
-  static Future<String> mergePdfs(List<File> files, String outputName) async {
+  static Future<List<int>> mergePdfsBytes(List<File> files) async {
     final PdfDocument document = PdfDocument();
-
     for (var file in files) {
       final PdfDocument inputDoc = PdfDocument(inputBytes: await file.readAsBytes());
-      
-      // Merge all pages from inputDoc to document
       for (int i = 0; i < inputDoc.pages.count; i++) {
-        // Create a template from the page
         final PdfPage page = inputDoc.pages[i];
         final PdfTemplate template = page.createTemplate();
-        
-        // Add new page to master doc and draw template
         final PdfPage newPage = document.pages.add();
         newPage.graphics.drawPdfTemplate(template, const Offset(0, 0));
       }
-      
       inputDoc.dispose();
     }
-
     final List<int> bytes = await document.save();
     document.dispose();
-
-    return await savePdf(bytes, "$outputName.pdf");
+    return bytes;
   }
 
-  /// Compress PDF
-  static Future<String> compressPdf(File file, String outputName) async {
-    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
-    
-    // Set compression level
-    document.compressionLevel = PdfCompressionLevel.best;
-    
-    // Save with compression
-    final List<int> bytes = await document.save();
-    document.dispose();
+  /// Compress PDF - Re-creating the document often yields better compression in Syncfusion
+  static Future<List<int>> compressPdfBytes(
+    File file, {
+    double quality = 50,
+    String? password,
+  }) async {
+    final Uint8List inputBytes = await file.readAsBytes();
+    final PdfDocument sourceDoc = PdfDocument(
+      inputBytes: inputBytes,
+      password: password,
+    );
+    final Uint8List unlockedBytes = Uint8List.fromList(await sourceDoc.save());
+    final List<Size> pageSizes = List<Size>.generate(
+      sourceDoc.pages.count,
+      (index) => sourceDoc.pages[index].getClientSize(),
+    );
+    sourceDoc.dispose();
 
-    return await savePdf(bytes, "compressed_$outputName.pdf");
-  }
+    final double clampedQuality = quality.clamp(1, 100);
+    final List<double> candidateDpis = <double>[
+      (30 + ((clampedQuality / 100) * 160)),
+      (24 + ((clampedQuality / 100) * 130)),
+      (18 + ((clampedQuality / 100) * 100)),
+    ].map((e) => e.clamp(12, 220).toDouble()).toList();
 
-  /// Split PDF into multiple documents based on page ranges
-  /// ranges: "1-2, 3-4"
-  static Future<List<String>> splitPdf(File file, String ranges) async {
-    final PdfDocument inputDoc = PdfDocument(inputBytes: await file.readAsBytes());
-    List<String> savedPaths = [];
-    
-    final List<String> rangeList = ranges.split(',');
-    int count = 1;
-
-    for (var range in rangeList) {
-      final parts = range.trim().split('-');
-      int start = int.parse(parts[0]) - 1;
-      int end = parts.length > 1 ? int.parse(parts[1]) - 1 : start;
-
-      final PdfDocument outputDoc = PdfDocument();
-      for (int i = start; i <= end; i++) {
-        if (i >= 0 && i < inputDoc.pages.count) {
-          final PdfPage page = inputDoc.pages[i];
-          final PdfTemplate template = page.createTemplate();
-          final PdfPage newPage = outputDoc.pages.add();
-          newPage.graphics.drawPdfTemplate(template, const Offset(0, 0));
-        }
-      }
-
-      final List<int> bytes = await outputDoc.save();
-      outputDoc.dispose();
-      
-      final path = await savePdf(bytes, "split_${count}_${p.basename(file.path)}");
-      savedPaths.add(path);
-      count++;
-    }
-
-    inputDoc.dispose();
-    return savedPaths;
-  }
-
-  /// Protect PDF with a password
-  static Future<String> protectPdf(File file, String password, String outputName) async {
-    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
-    
-    // Set security
-    final PdfSecurity security = document.security;
-    security.userPassword = password;
-    security.ownerPassword = password;
-    security.algorithm = PdfEncryptionAlgorithm.aesx256Bit;
-    
-    final List<int> bytes = await document.save();
-    document.dispose();
-
-    return await savePdf(bytes, "protected_$outputName.pdf");
-  }
-
-  /// Unlock PDF (remove password)
-  static Future<String> unlockPdf(File file, String password, String outputName) async {
-    // Syncfusion requires the password to open a protected document
-    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes(), password: password);
-    
-    // Remove security by saving it without any security settings
-    // document.security is already initialized, but saving it fresh usually works.
-    // In Syncfusion Flutter, you might need to create a new doc if security doesn't clear easily.
-    
-    final PdfDocument newDoc = PdfDocument();
-    for (int i = 0; i < document.pages.count; i++) {
-      final PdfTemplate template = document.pages[i].createTemplate();
-      newDoc.pages.add().graphics.drawPdfTemplate(template, const Offset(0, 0));
-    }
-
-    final List<int> bytes = await newDoc.save();
-    document.dispose();
-    newDoc.dispose();
-
-    return await savePdf(bytes, "unlocked_$outputName.pdf");
-  }
-
-  /// Delete pages from PDF
-  static Future<String> deletePages(File file, List<int> pageIndices, String outputName) async {
-    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
-    
-    // Sort indices in descending order to avoid index shift issues
-    pageIndices.sort((a, b) => b.compareTo(a));
-    
-    for (var index in pageIndices) {
-      if (index >= 0 && index < document.pages.count) {
-        document.pages.removeAt(index);
-      }
-    }
-
-    final List<int> bytes = await document.save();
-    document.dispose();
-
-    return await savePdf(bytes, "modified_$outputName.pdf");
-  }
-
-  /// Convert PDF pages to Images
-  static Future<List<String>> pdfToImages(File file) async {
-    final document = await pdfx.PdfDocument.openFile(file.path);
-    List<String> savedImagePaths = [];
-    
-    final Directory tempDir = await getTemporaryDirectory();
-    
-    for (int i = 1; i <= document.pagesCount; i++) {
-      final page = await document.getPage(i);
-      final pageImage = await page.render(
-        width: page.width * 2,
-        height: page.height * 2,
-        format: pdfx.PdfPageImageFormat.jpeg,
+    List<int>? bestRasterBytes;
+    for (final dpi in candidateDpis) {
+      final List<int>? bytes = await _compressViaRaster(
+        unlockedBytes,
+        pageSizes,
+        dpi,
       );
-      
-      if (pageImage != null) {
-        final path = p.join(tempDir.path, "page_${i}_${DateTime.now().millisecondsSinceEpoch}.jpg");
-        final imageFile = File(path);
-        await imageFile.writeAsBytes(pageImage.bytes);
-        savedImagePaths.add(path);
+      if (bytes == null) continue;
+      if (bestRasterBytes == null || bytes.length < bestRasterBytes.length) {
+        bestRasterBytes = bytes;
       }
-      await page.close();
     }
-    await document.close();
-    return savedImagePaths;
+
+    final List<int> templateBytes = await _rebuildPdfForCompression(
+      unlockedBytes,
+      password: null,
+    );
+
+    List<int> bestBytes = templateBytes;
+    if (bestRasterBytes != null && bestRasterBytes.length < bestBytes.length) {
+      bestBytes = bestRasterBytes;
+    }
+    if (inputBytes.length < bestBytes.length) {
+      return inputBytes;
+    }
+    return bestBytes;
   }
 
-  /// Crop PDF pages (Re-implemented using template approach)
-  static Future<String> cropPdf(File file, Rect cropRect, String outputName) async {
-    final PdfDocument inputDoc = PdfDocument(inputBytes: await file.readAsBytes());
+  static Future<List<int>?> _compressViaRaster(
+    Uint8List inputBytes,
+    List<Size> pageSizes,
+    double dpi,
+  ) async {
+    final PdfDocument rasterCompressedDoc = PdfDocument();
+    rasterCompressedDoc.compressionLevel = PdfCompressionLevel.best;
+
+    int pageIndex = 0;
+    try {
+      await for (final page in Printing.raster(inputBytes, dpi: dpi)) {
+        if (pageIndex >= pageSizes.length) break;
+        final Uint8List imageBytes = await page.toPng();
+        final Size pageSize = pageSizes[pageIndex];
+        rasterCompressedDoc.pageSettings.size = pageSize;
+        rasterCompressedDoc.pageSettings.margins.all = 0;
+        final PdfPage newPage = rasterCompressedDoc.pages.add();
+        newPage.graphics.drawImage(
+          PdfBitmap(imageBytes),
+          Rect.fromLTWH(0, 0, pageSize.width, pageSize.height),
+        );
+        pageIndex++;
+      }
+      if (pageIndex == 0) {
+        rasterCompressedDoc.dispose();
+        return null;
+      }
+      final List<int> result = await rasterCompressedDoc.save();
+      rasterCompressedDoc.dispose();
+      return result;
+    } catch (_) {
+      rasterCompressedDoc.dispose();
+      return null;
+    }
+  }
+
+  static Future<List<int>> _rebuildPdfForCompression(
+    Uint8List inputBytes, {
+    String? password,
+  }) async {
+    final PdfDocument inputDoc = PdfDocument(
+      inputBytes: inputBytes,
+      password: password,
+    );
     final PdfDocument outputDoc = PdfDocument();
-    
-    // Set the output page size to the crop rectangle's size
-    outputDoc.pageSettings.size = Size(cropRect.width, cropRect.height);
-    outputDoc.pageSettings.margins.all = 0;
+    outputDoc.compressionLevel = PdfCompressionLevel.best;
 
     for (int i = 0; i < inputDoc.pages.count; i++) {
       final PdfPage page = inputDoc.pages[i];
       final PdfTemplate template = page.createTemplate();
-      
       final PdfPage newPage = outputDoc.pages.add();
-      // Draw the template with an offset to achieve the "crop" effect
-      newPage.graphics.drawPdfTemplate(
-        template, 
-        Offset(-cropRect.left, -cropRect.top),
-      );
+      newPage.graphics.drawPdfTemplate(template, const Offset(0, 0));
     }
 
     final List<int> bytes = await outputDoc.save();
     inputDoc.dispose();
     outputDoc.dispose();
+    return bytes;
+  }
 
-    return await savePdf(bytes, "cropped_$outputName.pdf");
+  /// Extract specific pages from PDF
+  static Future<List<int>> extractPagesBytes(File file, List<int> pageIndices) async {
+    final PdfDocument inputDoc = PdfDocument(inputBytes: await file.readAsBytes());
+    final PdfDocument outputDoc = PdfDocument();
+    outputDoc.compressionLevel = PdfCompressionLevel.best;
+
+    for (var index in pageIndices) {
+      if (index >= 0 && index < inputDoc.pages.count) {
+        final PdfPage page = inputDoc.pages[index];
+        final PdfTemplate template = page.createTemplate();
+        final PdfPage newPage = outputDoc.pages.add();
+        newPage.graphics.drawPdfTemplate(template, const Offset(0, 0));
+      }
+    }
+
+    final List<int> bytes = await outputDoc.save();
+    inputDoc.dispose();
+    outputDoc.dispose();
+    return bytes;
+  }
+
+  /// Convert PDF pages to Images with DPI and Format options
+  static Future<List<String>> pdfToImages(File file, {int dpi = 150, String format = 'png'}) async {
+    final List<String> savedImagePaths = [];
+    final Directory tempDir = await getTemporaryDirectory();
+    final Uint8List pdfBytes = await file.readAsBytes();
+
+    int pageCount = 0;
+    await for (final page in Printing.raster(pdfBytes, dpi: dpi.toDouble())) {
+      Uint8List imageBytes;
+      String extension;
+
+      if (format.toLowerCase() == 'jpg' || format.toLowerCase() == 'jpeg') {
+        imageBytes = await page.toPng();
+        extension = 'jpg';
+      } else {
+        imageBytes = await page.toPng();
+        extension = 'png';
+      }
+
+      final path = p.join(tempDir.path, "page_${pageCount + 1}_${DateTime.now().millisecondsSinceEpoch}.$extension");
+      await File(path).writeAsBytes(imageBytes);
+      savedImagePaths.add(path);
+      pageCount++;
+    }
+
+    return savedImagePaths;
+  }
+
+  /// Convert HTML string or file to PDF
+  static Future<List<int>> htmlToPdfBytes(String htmlContent) async {
+    return await Printing.convertHtml(
+      html: htmlContent,
+      format: pw.PdfPageFormat.a4,
+    );
+  }
+
+  /// Extract Text
+  static Future<String> extractText(File file) async {
+    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
+    final PdfTextExtractor extractor = PdfTextExtractor(document);
+    final StringBuffer buffer = StringBuffer();
+
+    for (int i = 0; i < document.pages.count; i++) {
+      final String pageText = extractor.extractText(startPageIndex: i, endPageIndex: i);
+      if (pageText.trim().isNotEmpty) {
+        buffer.writeln('--- Page ${i + 1} ---');
+        buffer.writeln(pageText);
+        buffer.writeln();
+      }
+    }
+    document.dispose();
+    return buffer.toString();
+  }
+
+  /// Add text to PDF (Advanced Editing)
+  static Future<List<int>> addTextToPdfBytes(
+    File file,
+    String text,
+    Offset position, {
+    int pageIndex = 0,
+    bool isBold = false,
+    bool isItalic = false,
+    bool isUnderlined = false,
+    Color color = Colors.black,
+    double fontSize = 20,
+  }) async {
+    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
+    final int validPageIndex = pageIndex.clamp(0, document.pages.count - 1);
+    final PdfPage page = document.pages[validPageIndex];
+
+    final List<PdfFontStyle> styles = [];
+    if (isBold) styles.add(PdfFontStyle.bold);
+    if (isItalic) styles.add(PdfFontStyle.italic);
+    if (isUnderlined) styles.add(PdfFontStyle.underline);
+
+    final PdfFont font = PdfStandardFont(
+      PdfFontFamily.helvetica,
+      fontSize,
+      multiStyle: styles.isNotEmpty ? styles : null
+    );
+
+    page.graphics.drawString(
+      text,
+      font,
+      brush: PdfSolidBrush(
+        PdfColor(
+          (color.r * 255.0).round().clamp(0, 255),
+          (color.g * 255.0).round().clamp(0, 255),
+          (color.b * 255.0).round().clamp(0, 255),
+        ),
+      ),
+      bounds: Rect.fromLTWH(position.dx, position.dy, page.getClientSize().width - position.dx, fontSize * 2),
+    );
+
+    final List<int> bytes = await document.save();
+    document.dispose();
+    return bytes;
+  }
+
+  /// Protect PDF with a password
+  static Future<List<int>> protectPdfBytes(File file, String password) async {
+    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
+    final PdfSecurity security = document.security;
+    security.userPassword = password;
+    security.ownerPassword = password;
+    security.algorithm = PdfEncryptionAlgorithm.aesx256Bit;
+    final List<int> bytes = await document.save();
+    document.dispose();
+    return bytes;
+  }
+
+  /// Unlock PDF (remove password)
+  static Future<List<int>> unlockPdfBytes(File file, String password) async {
+    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes(), password: password);
+    final List<int> bytes = await document.save();
+    document.dispose();
+    return bytes;
+  }
+
+  /// Delete pages from PDF
+  static Future<List<int>> deletePagesBytes(File file, List<int> pageIndices) async {
+    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
+    pageIndices.sort((a, b) => b.compareTo(a));
+    for (var index in pageIndices) {
+      if (index >= 0 && index < document.pages.count) {
+        document.pages.removeAt(index);
+      }
+    }
+    final List<int> bytes = await document.save();
+    document.dispose();
+    return bytes;
+  }
+
+  /// Crop PDF pages
+  static Future<List<int>> cropPdfBytes(
+    File file,
+    Rect normalizedCropRect, {
+    Size? outputPageSize,
+    bool fitToPage = false,
+    String? password,
+    int? pageIndex,
+  }) async {
+    final PdfDocument inputDoc = PdfDocument(
+      inputBytes: await file.readAsBytes(),
+      password: password,
+    );
+    final PdfDocument outputDoc = PdfDocument();
+    outputDoc.compressionLevel = PdfCompressionLevel.best;
+    outputDoc.pageSettings.margins.all = 0;
+
+    for (int i = 0; i < inputDoc.pages.count; i++) {
+      if (pageIndex != null && i != pageIndex) {
+        continue;
+      }
+      final PdfPage page = inputDoc.pages[i];
+      final PdfTemplate template = page.createTemplate();
+      final Size pageSize = page.getClientSize();
+      final double left = normalizedCropRect.left.clamp(0.0, 1.0) * pageSize.width;
+      final double top = normalizedCropRect.top.clamp(0.0, 1.0) * pageSize.height;
+      final double right = normalizedCropRect.right.clamp(0.0, 1.0) * pageSize.width;
+      final double bottom = normalizedCropRect.bottom.clamp(0.0, 1.0) * pageSize.height;
+      final Rect cropRect = Rect.fromLTRB(
+        left,
+        top,
+        right > left ? right : left + 1,
+        bottom > top ? bottom : top + 1,
+      );
+
+      final Size targetPageSize = outputPageSize ?? Size(cropRect.width, cropRect.height);
+      outputDoc.pageSettings.size = targetPageSize;
+      outputDoc.pageSettings.margins.all = 0;
+      final PdfPage newPage = outputDoc.pages.add();
+      double offsetX = -cropRect.left + ((targetPageSize.width - cropRect.width) / 2);
+      double offsetY = -cropRect.top + ((targetPageSize.height - cropRect.height) / 2);
+
+      if (fitToPage && outputPageSize != null) {
+        final double scaleX = targetPageSize.width / cropRect.width;
+        final double scaleY = targetPageSize.height / cropRect.height;
+        final double scale = scaleX < scaleY ? scaleX : scaleY;
+        offsetX = -cropRect.left * scale + ((targetPageSize.width - (cropRect.width * scale)) / 2);
+        offsetY = -cropRect.top * scale + ((targetPageSize.height - (cropRect.height * scale)) / 2);
+        newPage.graphics.drawPdfTemplate(
+          template,
+          Offset(offsetX, offsetY),
+          Size(pageSize.width * scale, pageSize.height * scale),
+        );
+      } else {
+        newPage.graphics.drawPdfTemplate(template, Offset(offsetX, offsetY));
+      }
+    }
+
+    final List<int> bytes = await outputDoc.save();
+    inputDoc.dispose();
+    outputDoc.dispose();
+    return bytes;
+  }
+
+  static Future<Size> getFirstPageSize(File file, {String? password}) async {
+    final PdfDocument document = PdfDocument(
+      inputBytes: await file.readAsBytes(),
+      password: password,
+    );
+    if (document.pages.count == 0) {
+      document.dispose();
+      return const Size(1, 1);
+    }
+    final Size size = document.pages[0].getClientSize();
+    document.dispose();
+    return size;
+  }
+
+  static Future<Size> getPageSize(
+    File file, {
+    required int pageIndex,
+    String? password,
+  }) async {
+    final PdfDocument document = PdfDocument(
+      inputBytes: await file.readAsBytes(),
+      password: password,
+    );
+    if (document.pages.count == 0) {
+      document.dispose();
+      return const Size(1, 1);
+    }
+    final int safeIndex = pageIndex.clamp(0, document.pages.count - 1);
+    final Size size = document.pages[safeIndex].getClientSize();
+    document.dispose();
+    return size;
+  }
+
+  static Future<int> getPageCount(File file) async {
+    final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
+    final int count = document.pages.count;
+    document.dispose();
+    return count;
+  }
+
+  static Future<int> getPageCountWithPassword(File file, {String? password}) async {
+    final PdfDocument document = PdfDocument(
+      inputBytes: await file.readAsBytes(),
+      password: password,
+    );
+    final int count = document.pages.count;
+    document.dispose();
+    return count;
+  }
+
+  static Future<Uint8List> buildPreviewPdfBytes(File file, {String? password}) async {
+    final Uint8List inputBytes = await file.readAsBytes();
+    if (password == null || password.isEmpty) {
+      return inputBytes;
+    }
+    final PdfDocument doc = PdfDocument(inputBytes: inputBytes, password: password);
+    final List<int> bytes = await doc.save();
+    doc.dispose();
+    return Uint8List.fromList(bytes);
   }
 }
