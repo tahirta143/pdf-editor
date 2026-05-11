@@ -45,6 +45,7 @@ class PdfService {
       ),
     );
   }
+
   /// Request storage permission (Android) and return the Downloads directory
   static Future<Directory> _getDownloadsDirectory() async {
     if (Platform.isAndroid) {
@@ -70,7 +71,6 @@ class PdfService {
 
   static Future<String> savePdf(List<int> bytes, String fileName) async {
     final directory = await _getDownloadsDirectory();
-    // Ensure .pdf extension
     if (!fileName.toLowerCase().endsWith('.pdf')) {
       fileName = "$fileName.pdf";
     }
@@ -116,6 +116,7 @@ class PdfService {
       ),
     );
   }
+
   /// Rasterize a specific page to an image (for thumbnails)
   static Future<Uint8List?> rasterizePage(Uint8List pdfBytes, int pageIndex) async {
     try {
@@ -126,6 +127,151 @@ class PdfService {
       debugPrint("Rasterize error: $e");
     }
     return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TAP-TO-EDIT: Find text at a tapped PDF coordinate
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Searches all text lines on [pageIndex] and returns the line whose bounds
+  /// contain [tapPosition] (PDF-space points). A [hitRadius] tolerance is used
+  /// to make small text easier to tap.
+  ///
+  /// Returns a record with the original text and its bounding rect, or null
+  /// when nothing is found near the tap.
+  static Future<({String text, Rect bounds})?> findTextAtPosition(
+      File file,
+      int pageIndex,
+      Offset tapPosition, {
+        String? password,
+        double hitRadius = 8.0,
+      }) async {
+    final PdfDocument doc = PdfDocument(
+      inputBytes: await file.readAsBytes(),
+      password: password,
+    );
+    try {
+      final PdfTextExtractor extractor = PdfTextExtractor(doc);
+      final List<TextLine> lines = extractor.extractTextLines(
+        startPageIndex: pageIndex,
+        endPageIndex: pageIndex,
+      );
+
+      // Exact hit first
+      for (final TextLine line in lines) {
+        if (line.bounds.contains(tapPosition)) {
+          return (text: line.text, bounds: line.bounds);
+        }
+      }
+
+      // Tolerance hit — pick nearest centre within hitRadius
+      ({String text, Rect bounds})? best;
+      double bestDist = double.infinity;
+      for (final TextLine line in lines) {
+        final Rect expanded = Rect.fromLTRB(
+          line.bounds.left - hitRadius,
+          line.bounds.top - hitRadius,
+          line.bounds.right + hitRadius,
+          line.bounds.bottom + hitRadius,
+        );
+        if (expanded.contains(tapPosition)) {
+          final Offset centre = line.bounds.center;
+          final double dist = (centre - tapPosition).distance;
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = (text: line.text, bounds: line.bounds);
+          }
+        }
+      }
+      return best;
+    } catch (e) {
+      debugPrint("findTextAtPosition error: $e");
+      return null;
+    } finally {
+      doc.dispose();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TAP-TO-EDIT: Replace text at known bounds
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Whites-out the original text area on [pageIndex] and draws [newText]
+  /// at the same position with the given styling.
+  ///
+  /// Font size is estimated from the line height so the replacement text
+  /// visually matches the original size.
+  static Future<List<int>> editTextAtBounds(
+      File file,
+      int pageIndex,
+      Rect bounds,
+      String newText, {
+        bool isBold = false,
+        bool isItalic = false,
+        bool isUnderlined = false,
+        Color color = Colors.black,
+        String? password,
+      }) async {
+    final PdfDocument doc = PdfDocument(
+      inputBytes: await file.readAsBytes(),
+      password: password,
+    );
+
+    final PdfPage page = doc.pages[pageIndex.clamp(0, doc.pages.count - 1)];
+
+    // ── 1. White-out the original text area ─────────────────────────────
+    // Add a small vertical padding so ascenders/descenders are fully covered.
+    final Rect whiteoutRect = Rect.fromLTRB(
+      bounds.left - 1,
+      bounds.top - 2,
+      bounds.right + 1,
+      bounds.bottom + 2,
+    );
+    page.graphics.drawRectangle(
+      brush: PdfSolidBrush(PdfColor(255, 255, 255)),
+      bounds: whiteoutRect,
+    );
+
+    // ── 2. Estimate font size from line height ──────────────────────────
+    // PDF line height ≈ font size * 1.2, so font ≈ height / 1.2
+    final double fontSize = (bounds.height / 1.2).clamp(6.0, 72.0);
+
+    // ── 3. Build font with requested styles ────────────────────────────
+    final List<PdfFontStyle> styles = [];
+    if (isBold) styles.add(PdfFontStyle.bold);
+    if (isItalic) styles.add(PdfFontStyle.italic);
+    if (isUnderlined) styles.add(PdfFontStyle.underline);
+
+    final PdfFont font = PdfStandardFont(
+      PdfFontFamily.helvetica,
+      fontSize,
+      multiStyle: styles.isNotEmpty ? styles : null,
+    );
+
+    // ── 4. Draw the new text at the same position ───────────────────────
+    final double pageWidth = page.getClientSize().width;
+    page.graphics.drawString(
+      newText,
+      font,
+      brush: PdfSolidBrush(
+        PdfColor(
+          (color.r * 255.0).round().clamp(0, 255),
+          (color.g * 255.0).round().clamp(0, 255),
+          (color.b * 255.0).round().clamp(0, 255),
+        ),
+      ),
+      bounds: Rect.fromLTWH(
+        bounds.left,
+        bounds.top,
+        // Allow text to flow rightward if it's longer than original
+        (pageWidth - bounds.left).clamp(bounds.width, pageWidth - bounds.left),
+        bounds.height + 4,
+      ),
+    );
+
+    final List<int> bytes = await doc.save();
+    doc.dispose();
+    return bytes;
   }
 
   /// Convert Images to PDF
@@ -162,12 +308,12 @@ class PdfService {
     return bytes;
   }
 
-  /// Compress PDF - Re-creating the document often yields better compression in Syncfusion
+  /// Compress PDF
   static Future<List<int>> compressPdfBytes(
-    File file, {
-    double quality = 50,
-    String? password,
-  }) async {
+      File file, {
+        double quality = 50,
+        String? password,
+      }) async {
     final Uint8List inputBytes = await file.readAsBytes();
     final PdfDocument sourceDoc = PdfDocument(
       inputBytes: inputBytes,
@@ -176,7 +322,7 @@ class PdfService {
     final Uint8List unlockedBytes = Uint8List.fromList(await sourceDoc.save());
     final List<Size> pageSizes = List<Size>.generate(
       sourceDoc.pages.count,
-      (index) => sourceDoc.pages[index].getClientSize(),
+          (index) => sourceDoc.pages[index].getClientSize(),
     );
     sourceDoc.dispose();
 
@@ -189,37 +335,28 @@ class PdfService {
 
     List<int>? bestRasterBytes;
     for (final dpi in candidateDpis) {
-      final List<int>? bytes = await _compressViaRaster(
-        unlockedBytes,
-        pageSizes,
-        dpi,
-      );
+      final List<int>? bytes = await _compressViaRaster(unlockedBytes, pageSizes, dpi);
       if (bytes == null) continue;
       if (bestRasterBytes == null || bytes.length < bestRasterBytes.length) {
         bestRasterBytes = bytes;
       }
     }
 
-    final List<int> templateBytes = await _rebuildPdfForCompression(
-      unlockedBytes,
-      password: null,
-    );
+    final List<int> templateBytes = await _rebuildPdfForCompression(unlockedBytes, password: null);
 
     List<int> bestBytes = templateBytes;
     if (bestRasterBytes != null && bestRasterBytes.length < bestBytes.length) {
       bestBytes = bestRasterBytes;
     }
-    if (inputBytes.length < bestBytes.length) {
-      return inputBytes;
-    }
+    if (inputBytes.length < bestBytes.length) return inputBytes;
     return bestBytes;
   }
 
   static Future<List<int>?> _compressViaRaster(
-    Uint8List inputBytes,
-    List<Size> pageSizes,
-    double dpi,
-  ) async {
+      Uint8List inputBytes,
+      List<Size> pageSizes,
+      double dpi,
+      ) async {
     final PdfDocument rasterCompressedDoc = PdfDocument();
     rasterCompressedDoc.compressionLevel = PdfCompressionLevel.best;
 
@@ -252,13 +389,10 @@ class PdfService {
   }
 
   static Future<List<int>> _rebuildPdfForCompression(
-    Uint8List inputBytes, {
-    String? password,
-  }) async {
-    final PdfDocument inputDoc = PdfDocument(
-      inputBytes: inputBytes,
-      password: password,
-    );
+      Uint8List inputBytes, {
+        String? password,
+      }) async {
+    final PdfDocument inputDoc = PdfDocument(inputBytes: inputBytes, password: password);
     final PdfDocument outputDoc = PdfDocument();
     outputDoc.compressionLevel = PdfCompressionLevel.best;
 
@@ -296,7 +430,7 @@ class PdfService {
     return bytes;
   }
 
-  /// Convert PDF pages to Images with DPI and Format options
+  /// Convert PDF pages to Images
   static Future<List<String>> pdfToImages(File file, {int dpi = 150, String format = 'png'}) async {
     final List<String> savedImagePaths = [];
     final Directory tempDir = await getTemporaryDirectory();
@@ -304,17 +438,8 @@ class PdfService {
 
     int pageCount = 0;
     await for (final page in Printing.raster(pdfBytes, dpi: dpi.toDouble())) {
-      Uint8List imageBytes;
-      String extension;
-
-      if (format.toLowerCase() == 'jpg' || format.toLowerCase() == 'jpeg') {
-        imageBytes = await page.toPng();
-        extension = 'jpg';
-      } else {
-        imageBytes = await page.toPng();
-        extension = 'png';
-      }
-
+      final Uint8List imageBytes = await page.toPng();
+      final String extension = (format.toLowerCase() == 'jpg' || format.toLowerCase() == 'jpeg') ? 'jpg' : 'png';
       final path = p.join(tempDir.path, "page_${pageCount + 1}_${DateTime.now().millisecondsSinceEpoch}.$extension");
       await File(path).writeAsBytes(imageBytes);
       savedImagePaths.add(path);
@@ -324,7 +449,7 @@ class PdfService {
     return savedImagePaths;
   }
 
-  /// Convert HTML string or file to PDF
+  /// Convert HTML string to PDF
   static Future<List<int>> htmlToPdfBytes(String htmlContent) async {
     return await Printing.convertHtml(
       html: htmlContent,
@@ -350,18 +475,18 @@ class PdfService {
     return buffer.toString();
   }
 
-  /// Add text to PDF (Advanced Editing)
+  /// Add text to PDF (new annotation at a fixed position)
   static Future<List<int>> addTextToPdfBytes(
-    File file,
-    String text,
-    Offset position, {
-    int pageIndex = 0,
-    bool isBold = false,
-    bool isItalic = false,
-    bool isUnderlined = false,
-    Color color = Colors.black,
-    double fontSize = 20,
-  }) async {
+      File file,
+      String text,
+      Offset position, {
+        int pageIndex = 0,
+        bool isBold = false,
+        bool isItalic = false,
+        bool isUnderlined = false,
+        Color color = Colors.black,
+        double fontSize = 20,
+      }) async {
     final PdfDocument document = PdfDocument(inputBytes: await file.readAsBytes());
     final int validPageIndex = pageIndex.clamp(0, document.pages.count - 1);
     final PdfPage page = document.pages[validPageIndex];
@@ -374,7 +499,7 @@ class PdfService {
     final PdfFont font = PdfStandardFont(
       PdfFontFamily.helvetica,
       fontSize,
-      multiStyle: styles.isNotEmpty ? styles : null
+      multiStyle: styles.isNotEmpty ? styles : null,
     );
 
     page.graphics.drawString(
@@ -431,13 +556,13 @@ class PdfService {
 
   /// Crop PDF pages
   static Future<List<int>> cropPdfBytes(
-    File file,
-    Rect normalizedCropRect, {
-    Size? outputPageSize,
-    bool fitToPage = false,
-    String? password,
-    int? pageIndex,
-  }) async {
+      File file,
+      Rect normalizedCropRect, {
+        Size? outputPageSize,
+        bool fitToPage = false,
+        String? password,
+        int? pageIndex,
+      }) async {
     final PdfDocument inputDoc = PdfDocument(
       inputBytes: await file.readAsBytes(),
       password: password,
@@ -447,9 +572,7 @@ class PdfService {
     outputDoc.pageSettings.margins.all = 0;
 
     for (int i = 0; i < inputDoc.pages.count; i++) {
-      if (pageIndex != null && i != pageIndex) {
-        continue;
-      }
+      if (pageIndex != null && i != pageIndex) continue;
       final PdfPage page = inputDoc.pages[i];
       final PdfTemplate template = page.createTemplate();
       final Size pageSize = page.getClientSize();
@@ -458,8 +581,7 @@ class PdfService {
       final double right = normalizedCropRect.right.clamp(0.0, 1.0) * pageSize.width;
       final double bottom = normalizedCropRect.bottom.clamp(0.0, 1.0) * pageSize.height;
       final Rect cropRect = Rect.fromLTRB(
-        left,
-        top,
+        left, top,
         right > left ? right : left + 1,
         bottom > top ? bottom : top + 1,
       );
@@ -507,11 +629,7 @@ class PdfService {
     return size;
   }
 
-  static Future<Size> getPageSize(
-    File file, {
-    required int pageIndex,
-    String? password,
-  }) async {
+  static Future<Size> getPageSize(File file, {required int pageIndex, String? password}) async {
     final PdfDocument document = PdfDocument(
       inputBytes: await file.readAsBytes(),
       password: password,
@@ -545,9 +663,7 @@ class PdfService {
 
   static Future<Uint8List> buildPreviewPdfBytes(File file, {String? password}) async {
     final Uint8List inputBytes = await file.readAsBytes();
-    if (password == null || password.isEmpty) {
-      return inputBytes;
-    }
+    if (password == null || password.isEmpty) return inputBytes;
     final PdfDocument doc = PdfDocument(inputBytes: inputBytes, password: password);
     final List<int> bytes = await doc.save();
     doc.dispose();
