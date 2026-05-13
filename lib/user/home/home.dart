@@ -37,6 +37,12 @@ class _HomeState extends State<Home> {
       "icon": Icons.compress,
       "color1": const Color(0xFF00C853),
       "color2": const Color(0xFFB2FF59),
+    },{
+      "title": "PDF to Image",
+      "subtitle": "Export pages as images",
+      "icon": Icons.image,
+      "color1": const Color(0xFF3F51B5),
+      "color2": const Color(0xFF90CAF9),
     },
     {
       "title": "Delete Pages",
@@ -74,6 +80,13 @@ class _HomeState extends State<Home> {
       "color2": const Color(0xFFCE93D8),
     },
     {
+      "title": "Image to PDF",
+      "subtitle": "Convert images to PDF",
+      "icon": Icons.photo_library,
+      "color1": const Color(0xFF26A69A),
+      "color2": const Color(0xFFA7FFEB),
+    },
+    {
       "title": "PDF to Word",
       "subtitle": "Convert PDF to DOC",
       "icon": Icons.picture_as_pdf,
@@ -101,13 +114,7 @@ class _HomeState extends State<Home> {
       "color1": const Color(0xFF43A047),
       "color2": const Color(0xFF81C784),
     },
-    {
-      "title": "PDF to Image",
-      "subtitle": "Export pages as images",
-      "icon": Icons.image,
-      "color1": const Color(0xFF3F51B5),
-      "color2": const Color(0xFF90CAF9),
-    },
+
     {
       "title": "HTML to PDF",
       "subtitle": "Convert webpage to PDF",
@@ -115,13 +122,7 @@ class _HomeState extends State<Home> {
       "color1": const Color(0xFF6A1B9A),
       "color2": const Color(0xFFBA68C8),
     },
-    {
-      "title": "Image to PDF",
-      "subtitle": "Convert images to PDF",
-      "icon": Icons.photo_library,
-      "color1": const Color(0xFF26A69A),
-      "color2": const Color(0xFFA7FFEB),
-    },
+
   ];
 
   final List<Widget> screens = [
@@ -191,18 +192,18 @@ class _HomeState extends State<Home> {
       ),
       body: Column(
         children: [
-          ClipRRect(
-            borderRadius: const BorderRadius.only(
-              bottomLeft: Radius.circular(5),
-              bottomRight: Radius.circular(5),
-            ),
-            child: Image.asset(
-              "assets/images/img.png",
-              height: headerHeight,
-              width: double.infinity,
-              fit: BoxFit.cover,
-            ),
-          ),
+          // ClipRRect(
+          //   borderRadius: const BorderRadius.only(
+          //     bottomLeft: Radius.circular(5),
+          //     bottomRight: Radius.circular(5),
+          //   ),
+          //   child: Image.asset(
+          //     "assets/images/img.png",
+          //     height: headerHeight,
+          //     width: double.infinity,
+          //     fit: BoxFit.cover,
+          //   ),
+          // ),
           const SizedBox(height: 10),
           Expanded(
             child: Padding(
